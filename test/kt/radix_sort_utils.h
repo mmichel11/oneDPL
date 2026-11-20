@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <vector>
 #include <type_traits>
+#include <chrono>
 
 #if __has_include(<sycl/sycl.hpp>)
 #    include <sycl/sycl.hpp>
@@ -129,6 +130,25 @@ inline const std::vector<std::size_t> sort_sizes = {
     5072,    8192,      14001,   1 << 14,   (1 << 14) + 1, 50000,         67543,
     100'000, 1 << 17,   179'581, 250'000,   1 << 18,       (1 << 18) + 1, 500'000,
     888'235, 1'000'000, 1 << 20, 10'000'000};
+
+// [DO NOT MERGE] Reports the start and the end of a test case through the KT trace (enabled with _ONEDPL_KT_TRACE)
+struct TraceCase
+{
+    const char* name;
+    std::size_t size;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+    TraceCase(const char* name, std::size_t size) : name(name), size(size)
+    {
+        oneapi::dpl::experimental::kt::gpu::__impl::__kt_trace("test case START %s n=%zu", name, size);
+    }
+    ~TraceCase()
+    {
+        const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start;
+        oneapi::dpl::experimental::kt::gpu::__impl::__kt_trace("test case DONE  %s n=%zu in %.3f s", name, size,
+                                                               elapsed.count());
+    }
+};
 
 template <typename T, bool Order>
 struct Compare : public std::less<T>

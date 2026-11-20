@@ -13,6 +13,7 @@
 #include "../../../pstl/hetero/dpcpp/sycl_defs.h"
 #include "../../../pstl/utils.h"
 #include "kt_defs.h"
+#include "kt_debug_trace.h"
 #include "../kernel_param.h"
 
 #include <cstdint>
@@ -88,6 +89,14 @@ __get_num_cooperative_groups(const _Kernel& __kernel, sycl::queue& __q, std::uin
     const std::uint32_t __groups_per_xe_slm_adj = std::min(__max_groups_per_xe, __max_slm_xe / __true_slm_size_bytes);
     const std::uint32_t __concurrent_groups_est = __groups_per_xe_slm_adj * __xes_on_device;
     __max_num_cooperative_groups = std::min({__max_work_group_kernel_query, __tile_count, __concurrent_groups_est});
+    const std::uint32_t __uncapped_groups = __max_num_cooperative_groups;
+    __max_num_cooperative_groups = __kt_debug_max_groups(__max_num_cooperative_groups);
+    __kt_trace("cooperative groups: work_group_size=%u tiles=%u slm_requested=%u slm_reserved=%u local_mem_size=%u "
+               "xes=%u groups_per_xe(lanes)=%u groups_per_xe(slm adjusted)=%u estimate=%u l0_query=%u -> %u%s",
+               __work_group_size, __tile_count, __slm_size_bytes, __true_slm_size_bytes, __max_slm_xe,
+               __xes_on_device, __max_groups_per_xe, __groups_per_xe_slm_adj, __concurrent_groups_est,
+               __max_work_group_kernel_query, __max_num_cooperative_groups,
+               __max_num_cooperative_groups != __uncapped_groups ? " (capped by ONEDPL_KT_DEBUG_MAX_GROUPS)" : "");
 #else
     static_assert(oneapi::dpl::__internal::__always_false_v<_Kernel>,
                   "_ONEDPL_KT_COOPERATIVE_KERNELS_PRESENT must be defined to call __get_num_cooperative_groups");

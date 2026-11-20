@@ -153,6 +153,40 @@ function(_generate_sort_tests _variant _key_value_pairs)
     endforeach()
 endfunction()
 
+# [DO NOT MERGE] Generate only the sort tests selected for debugging, labeled "kt_debug" and built with the KT trace
+option(ONEDPL_TEST_KT_DEBUG_ONLY "Generate only the KT sort tests selected for debugging, with tracing" OFF)
+if (ONEDPL_TEST_KT_DEBUG_ONLY)
+    set(_kt_debug_tests
+        "radix_sort_by_key_out_of_place|7|1024|int|double"
+        "radix_sort_by_key|8|1024|char|double"
+        "radix_sort_by_key_out_of_place|12|512|sycl::half|double"
+        "radix_sort_by_key|13|512|uint16_t|double"
+        "radix_sort|12|1024|int32_t|"
+        "radix_sort_residency|32|1024|uint32_t|uint32_t")
+    foreach (_kt_debug_test ${_kt_debug_tests})
+        string(REPLACE "|" ";" _args "${_kt_debug_test}")
+        list(GET _args 0 _base_file)
+        list(GET _args 1 _data_per_work_item)
+        list(GET _args 2 _work_group_size)
+        list(GET _args 3 _key_type)
+        list(LENGTH _args _arg_count)
+        set(_val_type "")
+        if (_arg_count GREATER 4)
+            list(GET _args 4 _val_type)
+        endif()
+        _generate_sort_test("kt_sycl" ${_base_file} ${_data_per_work_item} ${_work_group_size} ${_key_type}
+                            "${_val_type}" 1000)
+    endforeach()
+    get_property(_kt_debug_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach (_target ${_kt_debug_targets})
+        if (_target MATCHES "^kt_sycl_.*\\.pass$")
+            target_compile_definitions(${_target} PRIVATE _ONEDPL_KT_TRACE=1)
+            set_tests_properties(${_target} PROPERTIES LABELS kt_debug)
+        endif()
+    endforeach()
+    return()
+endif()
+
 if (ONEDPL_TEST_ENABLE_KT_ESIMD)
     _generate_sort_tests("kt_esimd" FALSE) # radix_sort, random
     _generate_sort_tests("kt_esimd" TRUE) # radix_sort_by_key, random

@@ -108,8 +108,14 @@ main()
         try
         {
             // Test a case with a small number of tiles in addition to exceeding max residency
-            test_device_usm(q, 2 * elems_in_tile + 1, params);
-            test_device_usm(q, get_residency_saturating_size(q), params);
+            {
+                TraceCase trace_case("radix_sort_residency", 2 * elems_in_tile + 1);
+                test_device_usm(q, 2 * elems_in_tile + 1, params);
+            }
+            {
+                TraceCase trace_case("radix_sort_residency", get_residency_saturating_size(q));
+                test_device_usm(q, get_residency_saturating_size(q), params);
+            }
         }
         catch (const std::exception& exc)
         {

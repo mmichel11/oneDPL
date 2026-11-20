@@ -308,6 +308,7 @@ __onesweep_impl(_KtTag __kt_tag, sycl::queue __q, _RngPack1&& __input_pack, _Rng
     sycl::event __event_chain =
         __q.memset(__mem_holder.__global_hist_ptr(), 0,
                    (__layout.__global_hist_item_count + __layout.__group_hist_item_count) * sizeof(__onesweep_hist_t));
+    __kt_trace_submitted(__event_chain, "memset", 0, 0, 0);
 
     // TODO: consider adding a more versatile API, e.g. passing special kernel_config parameters for histogram computation
     constexpr std::uint32_t __hist_work_group_count = __radix_sort_histogram_params<_KtTag>::__work_group_count;
@@ -393,6 +394,20 @@ __onesweep(_KtTag __kt_tag, sycl::queue __q, _RngPack1&& __pack, _RngPack2&& __p
     using _Layout = __onesweep_layout<_KeyT, __radix_bits, __data_per_work_item, __work_group_size>;
     constexpr std::uint32_t __stage_count = _Layout::__stage_count;
     const _Layout __layout(__n, __segment_size);
+    __kt_trace_device(__q);
+    constexpr std::size_t __value_bytes = [] {
+        if constexpr (__has_values)
+            return sizeof(_ValT);
+        else
+            return std::size_t{0};
+    }();
+    __kt_trace("onesweep sort: n=%zu segment_size=%zu segments=%u tiles_per_segment=%u tiles=%u stages=%u "
+               "key_bytes=%zu value_bytes=%zu data_per_work_item=%u work_group_size=%u radix_bits=%u ascending=%d "
+               "in_place=%d internal_temp_storage=%d",
+               __n, __segment_size, __layout.__segments.__segment_count, __layout.__segments.__tiles_per_segment,
+               __layout.__sweep_tile_count(), __stage_count, sizeof(_KeyT), __value_bytes,
+               unsigned(__data_per_work_item), unsigned(__work_group_size), unsigned(__radix_bits),
+               int(__is_ascending), int(__in_place), int(__internal_alloc));
 
     // Memory is not going to be allocated for void value type
     // TODO: make this more explicit to reduce coupling between __onesweep_memory_holder and __rng_pack

@@ -1,0 +1,60 @@
+#!/bin/bash
+# [DO NOT MERGE] Runs the KT sort tests selected for debugging (ctest label "kt_debug") one at a time, each with:
+#   - the oneDPL host trace (kt-host-trace lines on stderr, see include/.../kt/internal/kt_debug_trace.h)
+#   - an IGC shader dump, summarized by extract_shader_info.py (grf_count, eu_thread_count, numAcc, spills, ...)
+#
+# Usage: [TIMEOUT=28800] [FILTER=<test name regex>] ./run_debug_tests.sh <build dir> [output dir]
+# The build directory must be configured with -DONEDPL_TEST_KT_DEBUG_ONLY=ON and built with
+# 'make build-kt_sycl-sort-tests'. All ONEDPL_KT_* variables in the environment are passed through to the tests.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BUILD="$(cd "${1:?usage: $0 <build dir> [output dir]}" && pwd)"
+OUT="${2:-$PWD/kt_debug_logs_$(date +%Y%m%d_%H%M%S)}"
+TIMEOUT="${TIMEOUT:-28800}"
+FILTER="${FILTER:-.}"
+mkdir -p "$OUT"
+
+{
+    echo "date: $(date)"
+    echo "host: $(hostname)"
+    echo "oneDPL: $(git -C "$HERE" rev-parse HEAD 2>/dev/null) ($(git -C "$HERE" rev-parse --abbrev-ref HEAD 2>/dev/null))"
+    echo "compiler: $(grep -m1 'CMAKE_CXX_COMPILER:' "$BUILD/CMakeCache.txt" | cut -d= -f2)"
+    "$(grep -m1 'CMAKE_CXX_COMPILER:' "$BUILD/CMakeCache.txt" | cut -d= -f2)" --version 2>&1 | head -1
+    echo "timeout: ${TIMEOUT}s"
+    echo "--- environment"
+    env | grep -E '^(LD_LIBRARY_PATH|PATH|ONEDPL_|ZE_|ZEX_|NEO|SYCL_|UR_|ONEAPI_|IGC_|OCL_)' | sort
+} > "$OUT/run_info.txt"
+
+mapfile -t TESTS < <(cd "$BUILD" && ctest -N -L kt_debug | sed -n 's/^ *Test *#[0-9]*: //p' | grep -E "$FILTER")
+echo "${#TESTS[@]} tests, logs in $OUT"
+printf '%-9s %9s  %-80s %s\n' result seconds test onesweep_grf/eu_thread_count > "$OUT/summary.txt"
+
+for name in "${TESTS[@]}"; do
+    dir="$OUT/${name%.pass}"
+    mkdir -p "$dir/igc_dump"
+    echo "=== $name"
+    start=$(date +%s)
+    # The compiler caches are disabled: a cached binary is not recompiled, so IGC would not dump it
+    (cd "$BUILD" && NEO_CACHE_PERSISTENT=0 SYCL_CACHE_PERSISTENT=0 \
+        IGC_ShaderDumpEnable=1 IGC_DumpToCustomDir="$dir/igc_dump" \
+        ctest -R "^${name//./\\.}\$" -V --timeout "$TIMEOUT" --output-on-failure) > "$dir/test.log" 2>&1
+    elapsed=$(( $(date +%s) - start ))
+    if grep -q "Passed" "$dir/test.log"; then result=PASS
+    elif grep -q "Timeout" "$dir/test.log"; then result=TIMEOUT
+    elif grep -q "Not Run\|Skipped" "$dir/test.log"; then result=SKIP
+    else result=FAIL; fi
+
+    python3 "$HERE/extract_shader_info.py" "$dir/igc_dump" --csv "$dir/shader_info.csv" > "$dir/shader_info.txt" 2>&1
+    onesweep=$(python3 -c 'import csv, sys
+rows = csv.DictReader(open(sys.argv[1]))
+print(" ".join(sorted({r["grf_count"] + "/" + r["eu_thread_count"] for r in rows if "onesweep_kernel" in r["kernel"]})))' \
+        "$dir/shader_info.csv" 2>/dev/null)
+    grep "kt-host-trace" "$dir/test.log" > "$dir/host_trace.log"
+    last=$(tail -1 "$dir/host_trace.log" | sed 's/^[0-9]*: //')
+    printf '%-9s %9s  %-80s %s\n' "$result" "$elapsed" "$name" "${onesweep:-?}" | tee -a "$OUT/summary.txt"
+    [ "$result" != PASS ] && echo "    last host trace line: $last" | tee -a "$OUT/summary.txt"
+done
+
+echo
+echo "===== $OUT/summary.txt"
+cat "$OUT/summary.txt"

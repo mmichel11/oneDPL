@@ -135,6 +135,7 @@ int main()
         {
             for (auto size : sort_sizes)
             {
+                TraceCase trace_case("radix_sort_by_key", size);
                 test_usm<TEST_KEY_TYPE, TEST_VALUE_TYPE, Ascending, TestRadixBits, sycl::usm::alloc::shared>(
                     q, size, TestUtils::create_new_kernel_param_idx<0>(params));
                 test_usm<TEST_KEY_TYPE, TEST_VALUE_TYPE, Descending, TestRadixBits, sycl::usm::alloc::shared>(

@@ -233,6 +233,7 @@ main()
         {
             for (auto size : sort_sizes)
             {
+                TraceCase trace_case("radix_sort_out_of_place", size);
                 test_general_cases<TEST_KEY_TYPE, Ascending, TestRadixBits>(
                     q, size, TestUtils::create_new_kernel_param_idx<0>(params));
                 test_general_cases<TEST_KEY_TYPE, Descending, TestRadixBits>(

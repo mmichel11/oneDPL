@@ -114,7 +114,7 @@ struct __radix_sort_histogram_submitter<__is_ascending, __radix_bits, __hist_wor
 
         sycl::nd_range<1> __nd_range(std::size_t(__actual_group_count) * __hist_work_group_size,
                                      __hist_work_group_size);
-        return __q.submit([&](sycl::handler& __cgh) {
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             sycl::local_accessor<std::uint32_t, 1> __slm_accessor(_GlobalHistKernelT::__slm_size, __cgh);
             oneapi::dpl::__ranges::__require_access(__cgh, __keys_rng);
             __cgh.depends_on(__e);
@@ -122,6 +122,8 @@ struct __radix_sort_histogram_submitter<__is_ascending, __radix_bits, __hist_wor
                                         __chunks_per_segment, __chunk_count, __chunks_per_group);
             __cgh.parallel_for<_Name...>(__nd_range, __kernel);
         });
+        __kt_trace_submitted(__event, "histogram", 0, __actual_group_count, __hist_work_group_size);
+        return __event;
     }
 #endif // _ONEDPL_ENABLE_SYCL_ONESWEEP_KT
 };
@@ -141,7 +143,7 @@ struct __radix_sort_onesweep_scan_submitter<
     {
         //scan kernel is pure sycl for esimd_sort, so no need to dispatch from tag
         sycl::nd_range<1> __nd_range(std::size_t(__stage_count) * __segment_count * __bin_count, __bin_count);
-        return __q.submit([&](sycl::handler& __cgh) {
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             __cgh.depends_on(__e);
             __cgh.parallel_for<_Name...>(__nd_range, [=](sycl::nd_item<1> __nd_item) {
                 std::size_t __offset = __nd_item.get_global_id(0);
@@ -152,6 +154,8 @@ struct __radix_sort_onesweep_scan_submitter<
                 __global_offset_data[__offset] = __presum;
             });
         });
+        __kt_trace_submitted(__event, "scan", 0, std::size_t(__stage_count) * __segment_count, __bin_count);
+        return __event;
     }
 };
 
@@ -227,11 +231,18 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
         sycl::kernel_bundle<sycl::bundle_state::executable> __bundle =
             sycl::get_kernel_bundle<sycl::bundle_state::executable>(__q.get_context(), {__q.get_device()}, {__kid});
         sycl::kernel __kernel = __bundle.get_kernel<_KernelName>();
+        __kt_trace_device(__q);
+        __kt_trace_kernel_info(__kernel, __q, "onesweep");
         std::uint32_t __num_wgs =
             __get_num_cooperative_groups(__kernel, __q, __work_group_size, __sweep_tile_count, __slm_size_bytes);
+        __kt_trace("onesweep stage=%u: tiles=%u launched_groups=%u tiles_per_group=%.2f work_group_size=%u "
+                   "data_per_work_item=%u slm_bytes=%u segments=%u tiles_per_segment=%u segment_size=%u",
+                   __stage, __sweep_tile_count, __num_wgs, double(__sweep_tile_count) / __num_wgs,
+                   unsigned(__work_group_size), unsigned(__data_per_work_item), __slm_size_bytes,
+                   __segments.__segment_count, __segments.__tiles_per_segment, __segments.__segment_size);
 
         sycl::nd_range<1> __nd_range(__num_wgs * __work_group_size, __work_group_size);
-        return __q.submit([&](sycl::handler& __cgh) {
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             __cgh.use_kernel_bundle(__bundle);
             sycl::local_accessor<unsigned char, 1> __slm_accessor(__slm_size_bytes, __cgh);
             oneapi::dpl::__ranges::__require_access(__cgh, __in_pack.__keys_rng(), __out_pack.__keys_rng());
@@ -244,6 +255,8 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
                                  std::forward<_OutRngPack>(__out_pack), __slm_accessor, __sweep_tile_count, __segments);
             __cgh.parallel_for<_KernelName>(__nd_range, __kernel);
         });
+        __kt_trace_submitted(__event, "onesweep", __stage, __num_wgs, __work_group_size);
+        return __event;
     }
 #endif // _ONEDPL_ENABLE_SYCL_ONESWEEP_KT
 };
@@ -260,7 +273,7 @@ struct __radix_sort_copyback_submitter<oneapi::dpl::__par_backend_hetero::__inte
                const sycl::event& __e) const
     {
         // Copyback kernel is pure sycl for esimd_sort, so no need to dispatch from tag
-        return __q.submit([&](sycl::handler& __cgh) {
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __in_pack.__keys_rng(), __out_pack.__keys_rng());
             if constexpr (std::decay_t<_InRngPack>::__has_values)
             {
@@ -277,6 +290,8 @@ struct __radix_sort_copyback_submitter<oneapi::dpl::__par_backend_hetero::__inte
                 }
             });
         });
+        __kt_trace_submitted(__event, "copyback", 0, __n, 1);
+        return __event;
     }
 };
 
