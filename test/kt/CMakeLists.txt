@@ -155,6 +155,7 @@ endfunction()
 
 # [DO NOT MERGE] Generate only the sort tests selected for debugging, labeled "kt_debug" and built with the KT trace
 option(ONEDPL_TEST_KT_DEBUG_ONLY "Generate only the KT sort tests selected for debugging, with tracing" OFF)
+option(ONEDPL_TEST_KT_DEVICE_DEBUG "With ONEDPL_TEST_KT_DEBUG_ONLY, also build the onesweep kernel's device side debugging" OFF)
 if (ONEDPL_TEST_KT_DEBUG_ONLY)
     set(_kt_debug_tests
         "radix_sort_by_key_out_of_place|7|1024|int|double"
@@ -181,6 +182,9 @@ if (ONEDPL_TEST_KT_DEBUG_ONLY)
     foreach (_target ${_kt_debug_targets})
         if (_target MATCHES "^kt_sycl_.*\\.pass$")
             target_compile_definitions(${_target} PRIVATE _ONEDPL_KT_TRACE=1)
+            if (ONEDPL_TEST_KT_DEVICE_DEBUG)
+                target_compile_definitions(${_target} PRIVATE _ONEDPL_KT_DEVICE_DEBUG=1)
+            endif()
             set_tests_properties(${_target} PROPERTIES LABELS kt_debug)
         endif()
     endforeach()

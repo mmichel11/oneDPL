@@ -242,6 +242,9 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
                    __segments.__segment_count, __segments.__tiles_per_segment, __segments.__segment_size);
 
         sycl::nd_range<1> __nd_range(__num_wgs * __work_group_size, __work_group_size);
+#if _ONEDPL_KT_DEVICE_DEBUG
+        std::uint32_t* __p_debug = __kt_device_debug_alloc(__q);
+#endif
         sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             __cgh.use_kernel_bundle(__bundle);
             sycl::local_accessor<unsigned char, 1> __slm_accessor(__slm_size_bytes, __cgh);
@@ -253,9 +256,15 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
             __cgh.depends_on(__e);
             _KernelType __kernel(__stage, __p_global_hist, __p_group_hists, std::forward<_InRngPack>(__in_pack),
                                  std::forward<_OutRngPack>(__out_pack), __slm_accessor, __sweep_tile_count, __segments);
+#if _ONEDPL_KT_DEVICE_DEBUG
+            __kernel.__set_debug(__p_debug, __kt_device_debug_spin_limit());
+#endif
             __cgh.parallel_for<_KernelName>(__nd_range, __kernel);
         });
         __kt_trace_submitted(__event, "onesweep", __stage, __num_wgs, __work_group_size);
+#if _ONEDPL_KT_DEVICE_DEBUG
+        __kt_device_debug_finish(__q, __event, __p_debug);
+#endif
         return __event;
     }
 #endif // _ONEDPL_ENABLE_SYCL_ONESWEEP_KT

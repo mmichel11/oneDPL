@@ -23,6 +23,7 @@
 
 #include "radix_sort_kernels.h"
 #include "radix_sort_utils.h"
+#include "kt_device_debug.h"
 
 namespace oneapi::dpl::experimental::kt::gpu::__impl
 {
@@ -505,6 +506,52 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
     {
     }
 
+#if _ONEDPL_KT_DEVICE_DEBUG
+    // [DO NOT MERGE] Device side debug state, see kt_device_debug.h
+    std::uint32_t* __p_debug = nullptr;
+    std::uint32_t __debug_spin_limit = 0;
+
+    void
+    __set_debug(std::uint32_t* __p_state, std::uint32_t __spin_limit)
+    {
+        __p_debug = __p_state;
+        __debug_spin_limit = __spin_limit;
+    }
+
+    using _DebugAtomicT = sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>;
+
+    // Called every lookback iteration; true when the lookback must give up. The checks only run once per
+    // __kt_debug_check_period iterations to keep the cost of the common path to a mask and a compare.
+    bool
+    __debug_lookback_stalled(const sycl::nd_item<1>& __idx, std::uint32_t __spins, std::uint32_t __bin_idx,
+                             const _GlobOffsetT* __p_this_group_hist, const _GlobOffsetT* __p_lookback_hist,
+                             _GlobOffsetT __observed) const
+    {
+        if ((__spins % __kt_debug_check_period) != 0) [[likely]]
+            return false;
+        if (_DebugAtomicT(__p_debug[__kt_debug_abort]).load() != 0)
+            return true;
+        if (__spins < __debug_spin_limit) [[likely]]
+            return false;
+
+        _DebugAtomicT(__p_debug[__kt_debug_abort]).store(1);
+        if (_DebugAtomicT(__p_debug[__kt_debug_stall_prints]).fetch_add(1) < __kt_debug_max_stall_prints)
+        {
+            static const _ONEDPL_KT_DEBUG_CONSTANT_AS char __format[] =
+                "[kt-device-debug] STALL stage=%u group=%u sub_group=%u bin=%u tile=%u waits_on_tile=%u "
+                "observed=0x%08x spins=%u started_groups=%u launched_groups=%u\n";
+            sycl::ext::oneapi::experimental::printf(
+                __format, __stage, std::uint32_t(__idx.get_group_linear_id()),
+                std::uint32_t(__idx.get_sub_group().get_group_linear_id()), __bin_idx,
+                std::uint32_t((__p_this_group_hist - __p_group_hists) / __bin_count),
+                std::uint32_t((__p_lookback_hist - __p_group_hists) / __bin_count), __observed, __spins,
+                _DebugAtomicT(__p_debug[__kt_debug_started]).load(), std::uint32_t(__idx.get_group_range(0)));
+        }
+        return true;
+    }
+#endif
+
     // Position of a tile in the input. Tiles are aligned to segments: a segment is covered by __tiles_per_segment
     // consecutive tile ids, and only its last tile may be partial.
     struct __tile_location
@@ -750,6 +797,17 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
                 __prev_group_hist =
                     (__lookback_counter < __atomic_fence_iter) ? __ref.load() : __ref.load(sycl::memory_order::acquire);
                 ++__lookback_counter;
+#if _ONEDPL_KT_DEVICE_DEBUG
+                // On a stall, act as if the predecessor had published an accumulated zero offset: the lookback ends
+                // and the tile writes within its segment (the output is masked by the segment end), so the kernel
+                // completes with an invalid result instead of waiting forever
+                if ((__prev_group_hist & __hist_updated_mask) == 0 &&
+                    __debug_lookback_stalled(__idx, __lookback_counter, __bin_idx, __p_this_group_hist,
+                                             __p_lookback_hist, __prev_group_hist)) [[unlikely]]
+                {
+                    __prev_group_hist = __hist_updated_mask | __global_accumulated_mask;
+                }
+#endif
             } while ((__prev_group_hist & __hist_updated_mask) == 0);
             __prev_group_hist_sum += __is_not_accumulated ? __prev_group_hist : 0;
             __is_not_accumulated = (__prev_group_hist_sum & __global_accumulated_mask) == 0;
@@ -873,6 +931,14 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
         const std::uint32_t __sub_group_slm_offset = __sg_id * __bin_count;
         std::uint32_t __tile_id = __group.get_group_linear_id();
         std::uint32_t __num_wgs = __idx.get_group_range(0);
+#if _ONEDPL_KT_DEVICE_DEBUG
+        // [DO NOT MERGE] Start ticket of this work-group, 1-based, and its last completed tile + 1 (0: none)
+        const bool __debug_leader = __idx.get_local_linear_id() == 0;
+        std::uint32_t __debug_start_ticket = 0;
+        std::uint32_t __debug_last_tile = 0;
+        if (__debug_leader)
+            __debug_start_ticket = _DebugAtomicT(__p_debug[__kt_debug_started]).fetch_add(1) + 1;
+#endif
         // Work-groups grid-stride over tiles in increasing order, and a tile only waits on smaller tile ids of its own
         // segment.
         for (; __tile_id < __num_tiles; __tile_id += __num_wgs)
@@ -917,7 +983,21 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
             sycl::group_barrier(__group);
             // Make sure our atomic updates are pushed to other groups
             sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::device);
+#if _ONEDPL_KT_DEVICE_DEBUG
+            __debug_last_tile = __tile_id + 1;
+#endif
         }
+#if _ONEDPL_KT_DEVICE_DEBUG
+        if (__debug_leader && _DebugAtomicT(__p_debug[__kt_debug_abort]).load() != 0) [[unlikely]]
+        {
+            static const _ONEDPL_KT_DEBUG_CONSTANT_AS char __format[] =
+                "[kt-device-debug] ABORTED stage=%u group=%u start_ticket=%u last_completed_tile=%d "
+                "launched_groups=%u tiles=%u\n";
+            sycl::ext::oneapi::experimental::printf(__format, __stage, std::uint32_t(__group.get_group_linear_id()),
+                                                    __debug_start_ticket, int(__debug_last_tile) - 1, __num_wgs,
+                                                    __num_tiles);
+        }
+#endif
     }
 };
 #endif // _ONEDPL_ENABLE_SYCL_ONESWEEP_KT

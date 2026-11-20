@@ -2,6 +2,7 @@
 # [DO NOT MERGE] Runs the KT sort tests selected for debugging (ctest label "kt_debug") one at a time, each with:
 #   - the oneDPL host trace (kt-host-trace lines on stderr, see include/.../kt/internal/kt_debug_trace.h)
 #   - an IGC shader dump, summarized by extract_shader_info.py (grf_count, eu_thread_count, numAcc, spills, ...)
+#   - the kt-device-debug lines, if the build has the device debug (ONEDPL_TEST_KT_DEVICE_DEBUG=ON)
 #
 # Usage: [TIMEOUT=28800] [FILTER=<test name regex>] ./run_debug_tests.sh <build dir> [output dir]
 # The build directory must be configured with -DONEDPL_TEST_KT_DEBUG_ONLY=ON and built with
@@ -27,7 +28,8 @@ mkdir -p "$OUT"
 
 mapfile -t TESTS < <(cd "$BUILD" && ctest -N -L kt_debug | sed -n 's/^ *Test *#[0-9]*: //p' | grep -E "$FILTER")
 echo "${#TESTS[@]} tests, logs in $OUT"
-printf '%-9s %9s  %-80s %s\n' result seconds test onesweep_grf/eu_thread_count > "$OUT/summary.txt"
+printf '%-9s %9s  %-80s %-30s %s\n' result seconds test onesweep_grf/eu_thread_count device_debug_stalls \
+    > "$OUT/summary.txt"
 
 for name in "${TESTS[@]}"; do
     dir="$OUT/${name%.pass}"
@@ -50,8 +52,11 @@ rows = csv.DictReader(open(sys.argv[1]))
 print(" ".join(sorted({r["grf_count"] + "/" + r["eu_thread_count"] for r in rows if "onesweep_kernel" in r["kernel"]})))' \
         "$dir/shader_info.csv" 2>/dev/null)
     grep "kt-host-trace" "$dir/test.log" > "$dir/host_trace.log"
+    grep "kt-device-debug" "$dir/test.log" > "$dir/device_debug.log"
+    stalls=$(grep -c "kt-device-debug\] STALL" "$dir/device_debug.log")
     last=$(tail -1 "$dir/host_trace.log" | sed 's/^[0-9]*: //')
-    printf '%-9s %9s  %-80s %s\n' "$result" "$elapsed" "$name" "${onesweep:-?}" | tee -a "$OUT/summary.txt"
+    printf '%-9s %9s  %-80s %-30s %s\n' "$result" "$elapsed" "$name" "${onesweep:-?}" "$stalls" \
+        | tee -a "$OUT/summary.txt"
     [ "$result" != PASS ] && echo "    last host trace line: $last" | tee -a "$OUT/summary.txt"
 done
 
