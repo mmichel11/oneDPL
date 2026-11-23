@@ -31,6 +31,9 @@ TIMEOUT=28800 test/kt/debug/run_debug_tests.sh build_kt_debug
 # Only some tests
 FILTER=residency TIMEOUT=600 test/kt/debug/run_debug_tests.sh build_kt_debug
 
+# Named run with notes, logs in ./kt_debug_logs_<timestamp>_<NAME>/
+NAME=driver_39758 NOTES="L0 1.17.39758, default GRF" TIMEOUT=600 test/kt/debug/run_debug_tests.sh build_kt_debug
+
 # Plain ctest, host trace only
 cd build_kt_debug && ctest -L kt_debug -V --timeout 28800
 ```
@@ -45,7 +48,8 @@ Outputs, per test (`<logs>/<test>/`):
 | `igc_dump/` | IGC shader dump (`.zeinfo`, `.asm`, ...) |
 | `shader_info.txt`, `shader_info.csv` | per kernel: `grf_count`, `eu_thread_count`, `numAcc`, SIMD, barriers, SLM, scratch, spills |
 
-Plus `run_info.txt` (compiler, git revision, environment) and `summary.txt` (result, duration, onesweep
+Plus `run_info.txt` (name, notes, compiler, git revision, build directory and whether it has the device debug,
+environment, and the device and driver from the host trace) and `summary.txt` (name, notes, result, duration, onesweep
 `grf_count/eu_thread_count`, the number of `STALL` lines, and the last host trace line of every test that did not pass).
 
 `run_debug_tests.sh` disables the NEO and SYCL compiler caches (`NEO_CACHE_PERSISTENT=0`,
