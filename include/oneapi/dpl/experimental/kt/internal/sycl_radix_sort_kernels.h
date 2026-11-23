@@ -572,7 +572,6 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
         // Tile histograms are indexed by the flat tile id. The tiles of a segment are consecutive, so its chained
         // scan walks backwards through memory.
         _GlobOffsetT* __p_this_group_hist = __p_group_hists + __hist_offset(__tile_id);
-        _GlobOffsetT* __p_prev_group_hist = __p_this_group_hist - __bin_count;
 
         // This is important so that we can evenly partition the radix bits across a number of sub-groups
         // without masking lanes. Radix bits is always a power of two, so this requirement essentially just
@@ -625,7 +624,7 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
         if (__sub_group_id < __bin_summary_sub_group_size && __loc.__local_tile != 0)
         {
             __work_group_chained_scan<__bin_process_width, __bin_summary_sub_group_size>(
-                __idx, __sub_group, __sub_group_local_id, __item_bin_count, __p_this_group_hist, __p_prev_group_hist,
+                __idx, __sub_group, __sub_group_local_id, __item_bin_count, __p_this_group_hist, __tile_id,
                 __slm_global_incoming);
         }
 
@@ -722,7 +721,7 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
     inline void
     __work_group_chained_scan(const sycl::nd_item<1>& __idx, sycl::sub_group __sub_group,
                               std::uint32_t __sub_group_local_id, _LocOffsetT __item_bin_count,
-                              _GlobOffsetT* __p_this_group_hist, _GlobOffsetT* __p_prev_group_hist,
+                              _GlobOffsetT* __p_this_group_hist, std::uint32_t __tile_id,
                               _GlobOffsetT* __slm_global_incoming) const
     {
         using _GlobalAtomicT = sycl::atomic_ref<_GlobOffsetT, sycl::memory_order::relaxed, sycl::memory_scope::device,
@@ -733,7 +732,10 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
         _GlobOffsetT __prev_group_hist_sum = 0;
         _GlobOffsetT __prev_group_hist;
         bool __is_not_accumulated = true;
-        _GlobOffsetT* __p_lookback_hist = __p_prev_group_hist;
+        // Index the previous tiles from the start of the group histograms: a negative offset from this tile's
+        // histogram is folded by IGC into a negative immediate with unsigned 32-bit offset addressing, which reads the
+        // wrong address on hardware.
+        std::uint32_t __lookback_tile = __tile_id - 1;
         do
         {
             // On Xe2, we have seen some low probability instances where the lookback gets stuck when using relaxed atomic loads even though
@@ -744,7 +746,7 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
             constexpr std::uint32_t __atomic_fence_iter = 256;
             std::uint32_t __lookback_counter = 0;
             _LocIdxT __bin_idx = __sub_group_group_id * __bin_process_width + __sub_group_local_id;
-            _GlobalAtomicT __ref(__p_lookback_hist[__bin_idx]);
+            _GlobalAtomicT __ref(__p_group_hists[__lookback_tile * __bin_count + __bin_idx]);
             do
             {
                 __prev_group_hist =
@@ -753,7 +755,7 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
             } while ((__prev_group_hist & __hist_updated_mask) == 0);
             __prev_group_hist_sum += __is_not_accumulated ? __prev_group_hist : 0;
             __is_not_accumulated = (__prev_group_hist_sum & __global_accumulated_mask) == 0;
-            __p_lookback_hist -= __bin_count;
+            --__lookback_tile;
         } while (sycl::any_of_group(__sub_group, __is_not_accumulated));
 
         __prev_group_hist_sum &= __global_offset_mask;
